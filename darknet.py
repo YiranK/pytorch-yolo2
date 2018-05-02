@@ -79,6 +79,8 @@ class Darknet(nn.Module):
     def forward(self, x):
         ind = -2
         self.loss = None
+        self.loss_semantic = None
+        self.total_loss = None
         outputs = dict()
         for block in self.blocks:
             ind = ind + 1
@@ -90,6 +92,11 @@ class Darknet(nn.Module):
             elif block['type'] == 'convolutional' or block['type'] == 'maxpool' or block['type'] == 'reorg' or block['type'] == 'avgpool' or block['type'] == 'softmax' or block['type'] == 'connected':
                 x = self.models[ind](x)
                 outputs[ind] = x
+
+                # for feature extraction
+                if self.feature_extraction_idx == ind:
+                    self.feature_extraction = outputs[ind]
+
             elif block['type'] == 'route':
                 layers = block['layers'].split(',')
                 layers = [int(i) if int(i) > 0 else int(i)+ind for i in layers]
@@ -124,6 +131,11 @@ class Darknet(nn.Module):
                 continue
             else:
                 print('unknown type %s' % (block['type']))
+
+        # for semantic prediction forward
+        y = self.models[-2](self.feature_extraction)
+        self.loss_semantic = nn.MSELoss(size_average=False)
+
         return x
 
     def print_network(self):
@@ -162,6 +174,10 @@ class Darknet(nn.Module):
                 prev_filters = filters
                 out_filters.append(prev_filters)
                 models.append(model)
+
+                # to get index of feature
+                if filters == 1024:
+                    self.feature_extraction_idx = len(models)-1
             elif block['type'] == 'maxpool':
                 pool_size = int(block['size'])
                 stride = int(block['stride'])
@@ -239,6 +255,14 @@ class Darknet(nn.Module):
                 models.append(loss)
             else:
                 print('unknown type %s' % (block['type']))
+
+        # for semantic branch
+        semantic_branch = [nn.Conv2d(1024, 1500, 1, 1, 1), nn.ReLU(inplace=True)]
+        models.append(semantic_branch)
+
+        # confidence_prediction
+        confidence_prediction = [nn.Conv2d(1024+1500+self.num_classes, 5, 1, 1, 1), nn.ReLU(inplace=True)]
+        models.append(confidence_prediction)
     
         return models
 
