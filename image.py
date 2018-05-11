@@ -79,44 +79,85 @@ def data_augmentation(img, shape, jitter, hue, saturation, exposure):
 
 def fill_truth_detection(labpath, w, h, flip, dx, dy, sx, sy):
     max_boxes = 50
-    label = np.zeros((max_boxes,5))
+    label = np.zeros((max_boxes,1+4+723)) # one value indicating 609 class, 4 box, 723 attribute, 20180509
     if os.path.getsize(labpath):
-        bs = np.loadtxt(labpath)
+        bs = np.load(labpath) # for '.npy', 20180509
+        # print labpath
         if bs is None:
             return label
-        bs = np.reshape(bs, (-1, 5))
+        #bs = np.reshape(bs, (-1, 6)) # no use, 20180509
+
         cc = 0
-        for i in range(bs.shape[0]):
-            x1 = bs[i][1] - bs[i][3]/2
-            y1 = bs[i][2] - bs[i][4]/2
-            x2 = bs[i][1] + bs[i][3]/2
-            y2 = bs[i][2] + bs[i][4]/2
+        for i in range(50):
+            if bs[i][0] != 1:
+                break
+            # get only one class index of bs[i], 20180510
+            cls_idx = bs[i][2].nonzero()[0][0]
+
+            # if i < 3:
+            #     print (i,' origin bbox:', bs[i][1])
+
+            x_center_float = bs[i][1][0]*(1./w) #x
+            y_center_float = bs[i][1][1]*(1./h) #y
+            w_float = bs[i][1][2]*(1./w) #w
+            h_float = bs[i][1][3]*(1./h) #h
+            bbox = np.array([cls_idx,x_center_float,y_center_float,w_float,h_float])
+
+            # if i < 3:
+            #     print (i,' class:', bs[i][2].nonzero())
+            #     print (i,' /wh bbox:', bs[i][1])
+            #     print (i,' cls concat /wh box:', bbox)
+
+            # origin YOLOv2 handle PASCAL VOC label file
+            # x1 = bbox[1] - bbox[3]/2
+            # y1 = bbox[2] - bbox[4]/2
+            # x2 = bbox[1] + bbox[3]/2
+            # y2 = bbox[2] + bbox[4]/2
+
+            # bbox:[x1,y1,w,h] -> [x1,y1,x2,y2], 20180511
+            x1 = bbox[1]
+            y1 = bbox[2]
+            x2 = bbox[1] + bbox[3] # x1+w
+            y2 = bbox[2] + bbox[4] # y1+h
             
             x1 = min(0.999, max(0, x1 * sx - dx)) 
             y1 = min(0.999, max(0, y1 * sy - dy)) 
             x2 = min(0.999, max(0, x2 * sx - dx))
             y2 = min(0.999, max(0, y2 * sy - dy))
+
+            # if i < 3:
+            #     print(i,' (x1,y1,x2,y2):',x1,y1,x2,y2)
             
-            bs[i][1] = (x1 + x2)/2
-            bs[i][2] = (y1 + y2)/2
-            bs[i][3] = (x2 - x1)
-            bs[i][4] = (y2 - y1)
+            bbox[1] = (x1 + x2)/2
+            bbox[2] = (y1 + y2)/2
+            bbox[3] = (x2 - x1)
+            bbox[4] = (y2 - y1)
+
+            # if i<3:
+            #     print (i,' after cropped (x,y,w,h):', bbox)
 
             if flip:
-                bs[i][1] =  0.999 - bs[i][1] 
+                bbox[1] =  0.999 - bbox[1]
             
-            if bs[i][3] < 0.001 or bs[i][4] < 0.001:
+            if bbox[3] < 0.001 or bbox[4] < 0.001:
                 continue
-            label[cc] = bs[i]
+
+            label[cc] = np.concatenate((bbox,bs[i][3]))
+
+            # if i<3:
+            #     print (i,' label:',label[cc])
+
             cc += 1
             if cc >= 50:
                 break
-
     label = np.reshape(label, (-1))
     return label
 
 def load_data_detection(imgpath, shape, jitter, hue, saturation, exposure):
-    labpath = imgpath.replace('images', 'labels').replace('JPEGImages', 'labels').replace('.jpg', '.txt').replace('.png','.txt')
+    # for vg_train.txt has the img id but not img path, modify the labpath and imgpath, 20180509
+    labpath = os.path.join('/mnt/lustre/kangyiran2/zero-shot-detection/dataset/zsd_anno', imgpath + '.npy')
+    imgpath = os.path.join('/mnt/lustre/kangyiran2/zero-shot-detection/dataset/imgs/VG_100K', imgpath + '.jpg')
+    #labpath = imgpath.replace('images', 'labels').replace('JPEGImages', 'labels').replace('.jpg', '.npy').replace('.png','.npy')
 
     ## data augmentation
     img = Image.open(imgpath).convert('RGB')

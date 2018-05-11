@@ -68,7 +68,8 @@ if not os.path.exists(backupdir):
 ###############
 torch.manual_seed(seed)
 if use_cuda:
-    os.environ['CUDA_VISIBLE_DEVICES'] = gpus
+    # for running in lustre, 20180511
+    #os.environ['CUDA_VISIBLE_DEVICES'] = gpus
     torch.cuda.manual_seed(seed)
 
 model       = Darknet(cfgfile)
@@ -85,13 +86,14 @@ init_height       = model.height
 init_epoch        = model.seen/nsamples 
 
 kwargs = {'num_workers': num_workers, 'pin_memory': True} if use_cuda else {}
-test_loader = torch.utils.data.DataLoader(
-    dataset.listDataset(testlist, shape=(init_width, init_height),
-                   shuffle=False,
-                   transform=transforms.Compose([
-                       transforms.ToTensor(),
-                   ]), train=False),
-    batch_size=batch_size, shuffle=False, **kwargs)
+# not evaluate and process the test for now, 20180509
+# test_loader = torch.utils.data.DataLoader(
+#     dataset.listDataset(testlist, shape=(init_width, init_height),
+#                    shuffle=False,
+#                    transform=transforms.Compose([
+#                        transforms.ToTensor(),
+#                    ]), train=False),
+#     batch_size=batch_size, shuffle=False, **kwargs)
 
 if use_cuda:
     if ngpus > 1:
@@ -143,10 +145,17 @@ def train(epoch):
         batch_size=batch_size, shuffle=False, **kwargs)
 
     lr = adjust_learning_rate(optimizer, processed_batches)
+    print (len(train_loader.dataset))
     logging('epoch %d, processed %d samples, lr %f' % (epoch, epoch * len(train_loader.dataset), lr))
     model.train()
     t1 = time.time()
     avg_time = torch.zeros(9)
+    # add yc matrix, 20180511
+    yc = np.loadtxt('/mnt/lustre/kangyiran2/zero-shot-detection/yc.txt')
+    yc = torch.from_numpy(yc)
+    yc = yc.float().cuda()
+    print (yc.type())
+    yc = Variable(yc)
     for batch_idx, (data, target) in enumerate(train_loader):
         t2 = time.time()
         adjust_learning_rate(optimizer, processed_batches)
@@ -162,10 +171,15 @@ def train(epoch):
         t4 = time.time()
         optimizer.zero_grad()
         t5 = time.time()
-        output = model(data)
+        # for three output loss, 20180503
+        print (data.size())
+        localization_output, semantic_output, confidence_output = model(data)
         t6 = time.time()
         region_loss.seen = region_loss.seen + data.data.size(0)
-        loss = region_loss(output, target)
+
+        # for three output loss, 20180503
+        loss = region_loss(localization_output, semantic_output, confidence_output, target, yc)
+
         t7 = time.time()
         loss.backward()
         t8 = time.time()
@@ -258,6 +272,7 @@ if evaluate:
     logging('evaluating ...')
     test(0)
 else:
-    for epoch in range(init_epoch, max_epochs): 
+    for epoch in range(init_epoch, max_epochs):
         train(epoch)
-        test(epoch)
+        # not evaluate and process the test for now, 20180509
+#         test(epoch)

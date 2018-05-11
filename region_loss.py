@@ -7,6 +7,7 @@ from torch.autograd import Variable
 from utils import *
 
 def build_targets(pred_boxes, target, anchors, num_anchors, num_classes, nH, nW, noobject_scale, object_scale, sil_thresh, seen):
+    # change all the target[b][t*5...] to target[b][t*6...] for attribute, 20180503
     nB = target.size(0)
     nA = num_anchors
     nC = num_classes
@@ -19,7 +20,10 @@ def build_targets(pred_boxes, target, anchors, num_anchors, num_classes, nH, nW,
     tw         = torch.zeros(nB, nA, nH, nW) 
     th         = torch.zeros(nB, nA, nH, nW) 
     tconf      = torch.zeros(nB, nA, nH, nW)
-    tcls       = torch.zeros(nB, nA, nH, nW) 
+    tcls       = torch.zeros(nB, nA, nH, nW)
+    # attribute, 20180503
+    nAttr = 723
+    tattr      = torch.zeros(nB, nA, nH, nW, nAttr)
 
     nAnchors = nA*nH*nW
     nPixels  = nH*nW
@@ -27,12 +31,12 @@ def build_targets(pred_boxes, target, anchors, num_anchors, num_classes, nH, nW,
         cur_pred_boxes = pred_boxes[b*nAnchors:(b+1)*nAnchors].t()
         cur_ious = torch.zeros(nAnchors)
         for t in xrange(50):
-            if target[b][t*5+1] == 0:
+            if target[b][t*728+1] == 0:
                 break
-            gx = target[b][t*5+1]*nW
-            gy = target[b][t*5+2]*nH
-            gw = target[b][t*5+3]*nW
-            gh = target[b][t*5+4]*nH
+            gx = target[b][t*728+1]*nW
+            gy = target[b][t*728+2]*nH
+            gw = target[b][t*728+3]*nW
+            gh = target[b][t*728+4]*nH
             cur_gt_boxes = torch.FloatTensor([gx,gy,gw,gh]).repeat(nAnchors,1).t()
             cur_ious = torch.max(cur_ious, bbox_ious(cur_pred_boxes, cur_gt_boxes, x1y1x2y2=False))
         conf_mask[b][cur_ious>sil_thresh] = 0
@@ -49,20 +53,21 @@ def build_targets(pred_boxes, target, anchors, num_anchors, num_classes, nH, nW,
 
     nGT = 0
     nCorrect = 0
+    print (target, target.nonzero())
     for b in xrange(nB):
         for t in xrange(50):
-            if target[b][t*5+1] == 0:
+            if target[b][t*728+1] == 0:
                 break
             nGT = nGT + 1
             best_iou = 0.0
             best_n = -1
             min_dist = 10000
-            gx = target[b][t*5+1] * nW
-            gy = target[b][t*5+2] * nH
+            gx = target[b][t*728+1] * nW
+            gy = target[b][t*728+2] * nH
             gi = int(gx)
             gj = int(gy)
-            gw = target[b][t*5+3]*nW
-            gh = target[b][t*5+4]*nH
+            gw = target[b][t*728+3]*nW
+            gh = target[b][t*728+4]*nH
             gt_box = [0, 0, gw, gh]
             for n in xrange(nA):
                 aw = anchors[anchor_step*n]
@@ -83,21 +88,25 @@ def build_targets(pred_boxes, target, anchors, num_anchors, num_classes, nH, nW,
 
             gt_box = [gx, gy, gw, gh]
             pred_box = pred_boxes[b*nAnchors+best_n*nPixels+gj*nW+gi]
-
+            print ('bbox/best_n',t,best_n)
             coord_mask[b][best_n][gj][gi] = 1
             cls_mask[b][best_n][gj][gi] = 1
             conf_mask[b][best_n][gj][gi] = object_scale
-            tx[b][best_n][gj][gi] = target[b][t*5+1] * nW - gi
-            ty[b][best_n][gj][gi] = target[b][t*5+2] * nH - gj
+            tx[b][best_n][gj][gi] = target[b][t*728+1] * nW - gi
+            ty[b][best_n][gj][gi] = target[b][t*728+2] * nH - gj
             tw[b][best_n][gj][gi] = math.log(gw/anchors[anchor_step*best_n])
             th[b][best_n][gj][gi] = math.log(gh/anchors[anchor_step*best_n+1])
             iou = bbox_iou(gt_box, pred_box, x1y1x2y2=False) # best_iou
             tconf[b][best_n][gj][gi] = iou
-            tcls[b][best_n][gj][gi] = target[b][t*5]
+            tcls[b][best_n][gj][gi] = target[b][t*728]
+            # add attribute, 20180503
+            tattr[b][best_n][gj][gi] = target[b][t*728+5:(t+1)*728]
+            print ('size of tattr[b][best_n][gj][gi], target[b][t*728+5:(t+1)*728] : ',
+                   len(tattr[b][best_n][gj][gi]), len(target[b][t*728+5:(t+1)*728]))
             if iou > 0.5:
                 nCorrect = nCorrect + 1
 
-    return nGT, nCorrect, coord_mask, conf_mask, cls_mask, tx, ty, tw, th, tconf, tcls
+    return nGT, nCorrect, coord_mask, conf_mask, cls_mask, tx, ty, tw, th, tconf, tcls, tattr
 
 class RegionLoss(nn.Module):
     def __init__(self, num_classes=0, anchors=[], num_anchors=1):
@@ -113,8 +122,9 @@ class RegionLoss(nn.Module):
         self.thresh = 0.6
         self.seen = 0
 
-    def forward(self, output, target):
+    def forward(self, output, semantic_prediction, confidence_prediction, target, yc):
         #output : BxAs*(4+1+num_classes)*H*W
+        # add the yc matrix for seen class attributes, 20180511
         t0 = time.time()
         nB = output.data.size(0)
         nA = self.num_anchors
@@ -122,14 +132,26 @@ class RegionLoss(nn.Module):
         nH = output.data.size(2)
         nW = output.data.size(3)
 
-        output   = output.view(nB, nA, (5+nC), nH, nW)
+        # 5 anchor x 4 bbox coordinate, 20180510
+        #output   = output.view(nB, nA, (5+nC), nH, nW)
+        output   = output.view(nB, nA, 4, nH, nW)
         x    = F.sigmoid(output.index_select(2, Variable(torch.cuda.LongTensor([0]))).view(nB, nA, nH, nW))
         y    = F.sigmoid(output.index_select(2, Variable(torch.cuda.LongTensor([1]))).view(nB, nA, nH, nW))
         w    = output.index_select(2, Variable(torch.cuda.LongTensor([2]))).view(nB, nA, nH, nW)
         h    = output.index_select(2, Variable(torch.cuda.LongTensor([3]))).view(nB, nA, nH, nW)
-        conf = F.sigmoid(output.index_select(2, Variable(torch.cuda.LongTensor([4]))).view(nB, nA, nH, nW))
-        cls  = output.index_select(2, Variable(torch.linspace(5,5+nC-1,nC).long().cuda()))
+        # conf = F.sigmoid(output.index_select(2, Variable(torch.cuda.LongTensor([4]))).view(nB, nA, nH, nW))
+        # change conf to confidence_prediction, 20180503
+        # confidence_prediction includes class prediction, 20180510
+        confidence_prediction = confidence_prediction.view(nB, nA, 1+nC, nH, nW)
+        conf = F.sigmoid(confidence_prediction.index_select(2, Variable(torch.cuda.LongTensor([0]))).view(nB, nA, nH, nW))
+        # change 5 to 1, for no bbox, 20180510
+        cls  = confidence_prediction.index_select(2, Variable(torch.linspace(1,1+nC-1,nC).long().cuda()))
         cls  = cls.view(nB*nA, nC, nH*nW).transpose(1,2).contiguous().view(nB*nA*nH*nW, nC)
+
+        # add attribute prediction, 20180503
+        print ('first semantic_prediction size: ', semantic_prediction.size())
+        semantic_prediction = semantic_prediction.view(nB, nA, 723, nH, nW).permute(0,1,3,4,2)
+        print ('after permute semantic_prediction size: ', semantic_prediction.size())
         t1 = time.time()
 
         pred_boxes = torch.cuda.FloatTensor(4, nB*nA*nH*nW)
@@ -146,10 +168,12 @@ class RegionLoss(nn.Module):
         pred_boxes = convert2cpu(pred_boxes.transpose(0,1).contiguous().view(-1,4))
         t2 = time.time()
 
-        nGT, nCorrect, coord_mask, conf_mask, cls_mask, tx, ty, tw, th, tconf,tcls = build_targets(pred_boxes, target.data, self.anchors, nA, nC, \
+        # add the return of attribute gt: tattr, 20180503
+        nGT, nCorrect, coord_mask, conf_mask, cls_mask, tx, ty, tw, th, tconf,tcls, tattr = build_targets(pred_boxes, target.data, self.anchors, nA, nC, \
                                                                nH, nW, self.noobject_scale, self.object_scale, self.thresh, self.seen)
         cls_mask = (cls_mask == 1)
         nProposals = int((conf > 0.25).sum().data[0])
+        print ('1:',tcls.size(),cls_mask.size())
 
         tx    = Variable(tx.cuda())
         ty    = Variable(ty.cuda())
@@ -157,11 +181,15 @@ class RegionLoss(nn.Module):
         th    = Variable(th.cuda())
         tconf = Variable(tconf.cuda())
         tcls  = Variable(tcls.view(-1)[cls_mask].long().cuda())
+        tattr = Variable(tattr.cuda())
+        print ('2:',tcls.size(), cls_mask.size(), cls_mask.nonzero())
 
+        # attr_mask = Variable(coord_mask.view(1,5,13,13,1).repeat(1,1,1,1,723).cuda())
         coord_mask = Variable(coord_mask.cuda())
         conf_mask  = Variable(conf_mask.cuda().sqrt())
         cls_mask   = Variable(cls_mask.view(-1, 1).repeat(1,nC).cuda())
-        cls        = cls[cls_mask].view(-1, nC)  
+        cls        = cls[cls_mask].view(-1, nC)
+        print ('3:', cls.size(), cls_mask.size())
 
         t3 = time.time()
 
@@ -170,8 +198,39 @@ class RegionLoss(nn.Module):
         loss_w = self.coord_scale * nn.MSELoss(size_average=False)(w*coord_mask, tw*coord_mask)/2.0
         loss_h = self.coord_scale * nn.MSELoss(size_average=False)(h*coord_mask, th*coord_mask)/2.0
         loss_conf = nn.MSELoss(size_average=False)(conf*conf_mask, tconf*conf_mask)/2.0
+        # semantic loss, 20180503
+        # for the cell that has object
+        print (semantic_prediction.size(), coord_mask.data.size(), tattr.data.size())
+        cosine_similarity = F.cosine_similarity(semantic_prediction*coord_mask, tattr*coord_mask, dim=2)
+        loss_attr_obj = nn.MSELoss(size_average=False)(cosine_similarity, coord_mask)/2.0
+        #for the cell that has no object
+        # todo: no obj mask, not 1-attr_mask
+        noobj_semantic_prediction = semantic_prediction*(1-attr_mask)
+        # print (noobj_semantic_prediction.transpose(2,4).size(),
+        #        noobj_semantic_prediction.transpose(2, 4).contiguous().size(),
+        #        noobj_semantic_prediction.transpose(2, 4).contiguous().view(nB * nA * nH * nW, 723).size(),
+        #        noobj_semantic_prediction.size())
+        noobj_semantic_prediction = noobj_semantic_prediction.transpose(2, 4).contiguous().view(nB * nA * nH * nW, 723)
+        print (noobj_semantic_prediction.size())
+        loss_attr_noobj = 0 # todo: create variable 0?
+        count = 0
+        for noobj_y_k in noobj_semantic_prediction:
+            count += 1
+            if count>200:
+                break
+            # do not care all zero row
+            if noobj_y_k.data.byte().any() == 0:
+                continue
+            # print (noobj_y_k)
+            noobj_y_k_repeat = noobj_y_k.repeat(479, 1)
+            # print (noobj_y_k_repeat.size(), noobj_y_k_repeat.data.type(), yc.data.type())
+            noobj_cosine_similarity = F.cosine_similarity(noobj_y_k.repeat(479, 1), yc, dim=1)
+            loss_attr_noobj = loss_attr_noobj + torch.max(noobj_cosine_similarity)
+            # print (noobj_cosine_similarity, torch.max(noobj_cosine_similarity))
+
         loss_cls = self.class_scale * nn.CrossEntropyLoss(size_average=False)(cls, tcls)
-        loss = loss_x + loss_y + loss_w + loss_h + loss_conf + loss_cls
+        # todo: determine the scale
+        loss = loss_x + loss_y + loss_w + loss_h + loss_conf + loss_cls + loss_attr_obj + loss_attr_noobj
         t4 = time.time()
         if False:
             print('-----------------------------------')

@@ -61,6 +61,7 @@ class listDataset(Dataset):
             img, label = load_data_detection(imgpath, self.shape, jitter, hue, saturation, exposure)
             label = torch.from_numpy(label)
         else:
+            # todo: change the label size while test to 50 * 6(add attribute)
             img = Image.open(imgpath).convert('RGB')
             if self.shape:
                 img = img.resize(self.shape)

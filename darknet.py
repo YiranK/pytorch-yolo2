@@ -61,8 +61,9 @@ class Darknet(nn.Module):
     def __init__(self, cfgfile):
         super(Darknet, self).__init__()
         self.blocks = parse_cfg(cfgfile)
+        self.num_attributes = 723  # for attributes, 20180509
         self.models = self.create_network(self.blocks) # merge conv, bn,leaky
-        self.loss = self.models[len(self.models)-1]
+        self.loss = self.models[len(self.models)-1-2] # after adding two modules, loss module is 3th in reverse order
 
         self.width = int(self.blocks[0]['width'])
         self.height = int(self.blocks[0]['height'])
@@ -75,6 +76,7 @@ class Darknet(nn.Module):
 
         self.header = torch.IntTensor([0,0,0,0])
         self.seen = 0
+
 
     def forward(self, x):
         ind = -2
@@ -132,11 +134,16 @@ class Darknet(nn.Module):
             else:
                 print('unknown type %s' % (block['type']))
 
-        # for semantic prediction forward
-        y = self.models[-2](self.feature_extraction)
-        self.loss_semantic = nn.MSELoss(size_average=False)
+        # for semantic prediction forward, 20180502
+        semantic_prediction = self.models[-2](self.feature_extraction)
+        print (self.feature_extraction.size(), semantic_prediction.size(), x.size())
 
-        return x
+        # for confidence prediction, 20180503
+        concat = torch.cat([self.feature_extraction, x, semantic_prediction], dim=1)
+        confidence_prediction = self.models[-1](concat)
+        print (confidence_prediction.size())
+
+        return x, semantic_prediction, confidence_prediction
 
     def print_network(self):
         print_cfg(self.blocks)
@@ -256,12 +263,15 @@ class Darknet(nn.Module):
             else:
                 print('unknown type %s' % (block['type']))
 
-        # for semantic branch
-        semantic_branch = [nn.Conv2d(1024, 1500, 1, 1, 1), nn.ReLU(inplace=True)]
+        # for semantic branch, 20180502
+        # for 5 anchor, 20180510
+        semantic_branch = nn.Sequential(nn.Conv2d(1024, self.num_attributes*5, 3, 1, 1, 1), nn.ReLU(inplace=True))
         models.append(semantic_branch)
 
-        # confidence_prediction
-        confidence_prediction = [nn.Conv2d(1024+1500+self.num_classes, 5, 1, 1, 1), nn.ReLU(inplace=True)]
+        # confidence_prediction, 20180502
+        # the number of input filter is 1024+20+self.attributes, 20180510
+        # output is 5*(1+self.num_classes)
+        confidence_prediction = nn.Sequential(nn.Conv2d(1024+20+self.num_attributes*5, 5*(1+loss.num_classes), 3, 1, 1, 1), nn.ReLU(inplace=True))
         models.append(confidence_prediction)
     
         return models
